@@ -40,7 +40,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _listenToDatabaseChanges();
   }
 
-  // 🔋 Zaryad darajasini olib, Firebase'ga yozish
+
   Future<void> _updateBatteryLevel() async {
     try {
       final batteryLevel = await _battery.batteryLevel;
