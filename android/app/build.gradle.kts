@@ -14,7 +14,9 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
+        isCoreLibraryDesugaringEnabled = true
     }
+
 
     kotlinOptions {
         jvmTarget = JavaVersion.VERSION_11.toString()
@@ -42,9 +44,10 @@ android {
 }
 dependencies {
     // Import the Firebase BoM
+    implementation("androidx.multidex:multidex:2.0.1")
     implementation(platform("com.google.firebase:firebase-bom:33.10.0"))
-
-
+    implementation("androidx.multidex:multidex:2.0.1")
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
     // TODO: Add the dependencies for Firebase products you want to use
     // When using the BoM, don't specify versions in Firebase dependencies
     implementation("com.google.firebase:firebase-analytics")
@@ -54,6 +57,7 @@ dependencies {
     // Add the dependencies for any other desired Firebase products
     // https://firebase.google.com/docs/android/setup#available-libraries
 }
+
 flutter {
     source = "../.."
 }
