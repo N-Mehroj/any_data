@@ -8,7 +8,8 @@ plugins {
 
 android {
     namespace = "com.example.any_data"
-    compileSdk = flutter.compileSdkVersion
+    compileSdk = 35
+   // compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
