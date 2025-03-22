@@ -9,15 +9,8 @@ import 'package:device_info_plus/device_info_plus.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  try {
-    await Firebase.initializeApp();
-    print("Firebase initialized successfully");
-  } catch (e) {
-    print("Firebase initialization error: $e");
-    return; // Firebase ishlamasa, ilova to‘xtaydi
-  }
-  await initializeService();
-  runApp(const MyApp());
+  await Firebase.initializeApp();
+  runApp(MyApp());
 }
 
 Future<void> initializeService() async {
@@ -31,6 +24,7 @@ Future<void> initializeService() async {
       notificationChannelId: "battery_service_channel",
       initialNotificationTitle: "Battery Monitor",
       initialNotificationContent: "Monitoring battery level...",
+      foregroundServiceNotificationId: 888,
     ),
     iosConfiguration: IosConfiguration(
       autoStart: true,
@@ -46,7 +40,6 @@ Future<void> initializeService() async {
     print("Service start error: $e");
   }
 }
-
 @pragma('vm:entry-point')
 void onStart(ServiceInstance service) async {
   final battery = Battery();
@@ -115,73 +108,109 @@ bool onBackground(ServiceInstance service) {
   return true;
 }
 
-class MyApp extends StatefulWidget {
-  const MyApp({super.key});
-
-  @override
-  _MyAppState createState() => _MyAppState();
-}
-
-class _MyAppState extends State<MyApp> {
-  String deviceId = "Unknown";
-  int batteryLevel = 0;
-  bool isCharging = false;
-  final database = FirebaseDatabase.instance.ref();
-
-  @override
-  void initState() {
-    super.initState();
-    _listenToFirebase(); // Firebase’dan real vaqtda o‘qish
-  }
-
-  void _listenToFirebase() async {
-    final deviceInfo = DeviceInfoPlugin();
-    try {
-      final androidInfo = await deviceInfo.androidInfo;
-      final deviceId = androidInfo.id ?? "unknown_device";
-      database.child('devices').child(deviceId).onValue.listen((event) {
-        if (event.snapshot.value != null) {
-          final data = event.snapshot.value as Map<dynamic, dynamic>;
-          setState(() {
-            this.deviceId = deviceId;
-            batteryLevel = data['batteryLevel'] as int? ?? 0;
-            isCharging = data['isCharging'] as bool? ?? false;
-          });
-          print("Data received from Firebase: $batteryLevel%");
-        } else {
-          print("No data in Firebase for device: $deviceId");
-        }
-      }, onError: (error) {
-        print("Firebase read error: $error");
-      });
-    } catch (e) {
-      print("Error getting device info for Firebase: $e");
-    }
-  }
-
+class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      home: Scaffold(
-        appBar: AppBar(
-          title: const Text("Battery Status"),
-        ),
-        body: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Text("Device ID: $deviceId", style: const TextStyle(fontSize: 18)),
-              Text("Battery Level: $batteryLevel%", style: const TextStyle(fontSize: 24)),
-              Text("Charging: ${isCharging ? 'Yes' : 'No'}", style: const TextStyle(fontSize: 18)),
-              const SizedBox(height: 20),
-              ElevatedButton(
-                onPressed: () {
-                  FlutterBackgroundService().invoke("stopService");
-                },
-                child: const Text("Stop Service"),
-              ),
-            ],
-          ),
+      title: 'Battery Level Monitor',
+      theme: ThemeData(
+        primarySwatch: Colors.blue,
+      ),
+      home: HomeScreen(),
+    );
+  }
+}
+
+class HomeScreen extends StatefulWidget {
+  @override
+  _HomeScreenState createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  final Battery _battery = Battery();
+  int _batteryLevel = 0;
+  String _statusMessage = "Checking...";
+  final DatabaseReference _database = FirebaseDatabase.instance.ref("battery_level");
+
+  // @override
+  // void initState() {
+  //   super.initState();
+  //   _monitorBatteryLevel();
+  //   _listenToDatabaseChanges();
+  // }
+
+
+  Future<void> _updateBatteryLevel() async {
+    try {
+      final batteryLevel = await _battery.batteryLevel;
+      setState(() {
+        _batteryLevel = batteryLevel;
+      });
+      final deviceInfo = DeviceInfoPlugin();
+      final androidInfo = await deviceInfo.androidInfo;
+      // Firebase-ga yozish
+      await _database.set({
+        "level": _batteryLevel,
+        "deviceId": androidInfo.id,
+        "deviceModel":androidInfo.model,
+        "timestamp": DateTime.now().toIso8601String(),
+      });
+
+      setState(() {
+        _statusMessage = "Battery level updated successfully!";
+      });
+    } catch (e) {
+      setState(() {
+        _statusMessage = "Error updating battery level: $e";
+      });
+    }
+  }
+
+  // 🔍 Firebase'ga yozilgan ma'lumotni doimiy kuzatish
+  void _listenToDatabaseChanges() {
+    _database.onValue.listen((DatabaseEvent event) {
+      if (event.snapshot.value != null) {
+        setState(() {
+          _statusMessage = "Data successfully written: ${event.snapshot.value}";
+        });
+      } else {
+        setState(() {
+          _statusMessage = "No data in Firebase!";
+        });
+      }
+    }, onError: (error) {
+      setState(() {
+        _statusMessage = "Error reading database: $error";
+      });
+    });
+  }
+
+  // 🔄 Zaryad holati o'zgarganda yangilash
+  void _monitorBatteryLevel() {
+    _battery.onBatteryStateChanged.listen((BatteryState state) {
+      _updateBatteryLevel();
+    });
+  }
+
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text('Battery Level Monitor')),
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text('Battery Level: $_batteryLevel%', style: TextStyle(fontSize: 24)),
+            Text('Device :  123', style: TextStyle(fontSize: 24)),
+            SizedBox(height: 20),
+            Text('Status: $_statusMessage', style: TextStyle(fontSize: 16, color: Colors.green)),
+            SizedBox(height: 20),
+            ElevatedButton(
+              onPressed: _updateBatteryLevel,
+              child: Text("Update Battery Level"),
+            ),
+          ],
         ),
       ),
     );
