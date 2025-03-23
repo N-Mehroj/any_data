@@ -7,10 +7,47 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 
-void main() async {
+void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp();
-  runApp(MyApp());
+  runApp(const MyApp());
+}
+
+Future<void> initializeApp(BuildContext context) async {
+  try {
+    await Firebase.initializeApp();
+    print("Firebase initialized successfully in main");
+  } catch (e) {
+    print("Firebase initialization error in main: $e");
+  }
+  await _requestBackgroundPermission(context);
+}
+
+Future<void> _requestBackgroundPermission(BuildContext context) async {
+  final bool permissionGranted = await showDialog(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text("Background Service Permission"),
+      content: const Text(
+          "This app needs to run in the background to monitor battery level even when closed. Allow it? For best results, disable battery optimization in Settings > Battery > Battery Optimization."),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(false),
+          child: const Text("No"),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(true),
+          child: const Text("Yes"),
+        ),
+      ],
+    ),
+  ) ??
+      false;
+
+  if (permissionGranted) {
+    await initializeService();
+  } else {
+    print("Background service permission denied by user");
+  }
 }
 
 Future<void> initializeService() async {
@@ -20,11 +57,8 @@ Future<void> initializeService() async {
     androidConfiguration: AndroidConfiguration(
       onStart: onStart,
       autoStart: true,
-      isForegroundMode: true,
-      notificationChannelId: "battery_service_channel",
-      initialNotificationTitle: "Battery Monitor",
-      initialNotificationContent: "Monitoring battery level...",
-      foregroundServiceNotificationId: 888,
+      autoStartOnBoot: true,
+      isForegroundMode: false, // Bildirishnomasiz orqa fonda
     ),
     iosConfiguration: IosConfiguration(
       autoStart: true,
@@ -40,53 +74,50 @@ Future<void> initializeService() async {
     print("Service start error: $e");
   }
 }
+
 @pragma('vm:entry-point')
 void onStart(ServiceInstance service) async {
+  try {
+    await Firebase.initializeApp();
+    print("Firebase initialized successfully in background");
+  } catch (e) {
+    print("Firebase initialization error in background: $e");
+    return;
+  }
+
   final battery = Battery();
-  final database = FirebaseDatabase.instance.ref();
+  final database = FirebaseDatabase.instance.ref('battery_level');
   final deviceInfo = DeviceInfoPlugin();
 
-  // Qurilma identifikatorini olish
   String deviceId = "unknown_device";
+  String deviceModel = "unknown_model";
   try {
     final androidInfo = await deviceInfo.androidInfo;
     deviceId = androidInfo.id ?? "unknown_device";
-    print("Device ID: $deviceId");
+    deviceModel = androidInfo.model ?? "unknown_model";
+    print("Device ID: $deviceId, Model: $deviceModel");
   } catch (e) {
-    print("Error getting device ID: $e");
+    print("Error getting device info: $e");
   }
 
-  // Foreground rejimi uchun bildirishnoma sozlamasi
-  if (service is AndroidServiceInstance) {
-    try {
-      await service.setAsForegroundService();
-      service.setForegroundNotificationInfo(
-        title: "Battery Monitor",
-        content: "Monitoring battery level...",
-      );
-    } catch (e) {
-      print("Foreground service error: $e");
-    }
-  }
-
-  // Har 20 sekundda Firebase’ga ma’lumot yozish
   Timer.periodic(const Duration(seconds: 20), (timer) async {
     try {
       final batteryLevel = await battery.batteryLevel;
       final batteryState = await battery.batteryState;
       final isCharging = batteryState == BatteryState.charging;
 
-      // Firebase’ga real vaqtda yozish
-      await database.child('devices').child(deviceId).set({
-        'batteryLevel': batteryLevel,
-        'isCharging': isCharging,
-        'timestamp': DateTime.now().toIso8601String(),
+      await database.set({
+        "level": batteryLevel,
+        "deviceId": deviceId,
+        "deviceModel": deviceModel,
+        "isCharging": isCharging,
+        "timestamp": DateTime.now().toIso8601String(),
       });
 
-      // UI uchun ma’lumot yuborish
       service.invoke("update", {
-        "deviceId": deviceId,
         "batteryLevel": batteryLevel,
+        "deviceId": deviceId,
+        "deviceModel": deviceModel,
         "isCharging": isCharging,
       });
       print("Data sent to Firebase: $batteryLevel% (Charging: $isCharging)");
@@ -95,7 +126,6 @@ void onStart(ServiceInstance service) async {
     }
   });
 
-  // Xizmatni to‘xtatish
   service.on("stopService").listen((event) {
     service.stopSelf();
     print("Service stopped");
@@ -109,6 +139,8 @@ bool onBackground(ServiceInstance service) {
 }
 
 class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
@@ -116,62 +148,83 @@ class MyApp extends StatelessWidget {
       theme: ThemeData(
         primarySwatch: Colors.blue,
       ),
-      home: HomeScreen(),
+      home: const HomeScreen(),
     );
   }
 }
 
 class HomeScreen extends StatefulWidget {
+  const HomeScreen({super.key});
+
   @override
   _HomeScreenState createState() => _HomeScreenState();
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  final Battery _battery = Battery();
   int _batteryLevel = 0;
   String _statusMessage = "Checking...";
-  final DatabaseReference _database = FirebaseDatabase.instance.ref("battery_level");
+  String _deviceId = "Unknown";
+  String _deviceModel = "Unknown";
+  DatabaseReference? _database;
+  bool _isDatabaseInitialized = false;
 
-  // @override
-  // void initState() {
-  //   super.initState();
-  //   _monitorBatteryLevel();
-  //   _listenToDatabaseChanges();
-  // }
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      initializeApp(context);
+      _initializeFirebaseAndDatabase().then((_) {
+        if (_isDatabaseInitialized) {
+          _listenToService();
+          _listenToDatabaseChanges();
+        }
+      });
+    });
+  }
 
-
-  Future<void> _updateBatteryLevel() async {
+  Future<void> _initializeFirebaseAndDatabase() async {
     try {
-      final batteryLevel = await _battery.batteryLevel;
+      await Firebase.initializeApp();
+      print("Firebase initialized successfully in UI");
+      _database = FirebaseDatabase.instance.ref("battery_level");
       setState(() {
-        _batteryLevel = batteryLevel;
+        _isDatabaseInitialized = true;
       });
-      final deviceInfo = DeviceInfoPlugin();
-      final androidInfo = await deviceInfo.androidInfo;
-      // Firebase-ga yozish
-      await _database.set({
-        "level": _batteryLevel,
-        "deviceId": androidInfo.id,
-        "deviceModel":androidInfo.model,
-        "timestamp": DateTime.now().toIso8601String(),
-      });
-
-      setState(() {
-        _statusMessage = "Battery level updated successfully!";
-      });
+      print("Database initialized successfully");
     } catch (e) {
       setState(() {
-        _statusMessage = "Error updating battery level: $e";
+        _statusMessage = "Initialization error: $e";
       });
+      print("Firebase/Database initialization error: $e");
     }
   }
 
-  // 🔍 Firebase'ga yozilgan ma'lumotni doimiy kuzatish
+  void _listenToService() {
+    FlutterBackgroundService().on("update").listen((event) {
+      setState(() {
+        _batteryLevel = event?["batteryLevel"] ?? 0;
+        _deviceId = event?["deviceId"] ?? "Unknown";
+        _deviceModel = event?["deviceModel"] ?? "Unknown";
+        _statusMessage = "Updated from background: $_batteryLevel%";
+      });
+    }, onError: (e) {
+      setState(() {
+        _statusMessage = "Service error: $e";
+      });
+      print("Service listener error: $e");
+    });
+  }
+
   void _listenToDatabaseChanges() {
-    _database.onValue.listen((DatabaseEvent event) {
+    if (_database == null) return;
+    _database!.onValue.listen((DatabaseEvent event) {
       if (event.snapshot.value != null) {
+        final data = event.snapshot.value as Map<dynamic, dynamic>;
         setState(() {
-          _statusMessage = "Data successfully written: ${event.snapshot.value}";
+          _batteryLevel = data['level'] as int? ?? 0;
+          _deviceId = data['deviceId'] as String? ?? "Unknown";
+          _deviceModel = data['deviceModel'] as String? ?? "Unknown";
+          _statusMessage = "Data from Firebase: $_batteryLevel%";
         });
       } else {
         setState(() {
@@ -182,33 +235,32 @@ class _HomeScreenState extends State<HomeScreen> {
       setState(() {
         _statusMessage = "Error reading database: $error";
       });
+      print("Database listener error: $error");
     });
   }
-
-  // 🔄 Zaryad holati o'zgarganda yangilash
-  void _monitorBatteryLevel() {
-    _battery.onBatteryStateChanged.listen((BatteryState state) {
-      _updateBatteryLevel();
-    });
-  }
-
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text('Battery Level Monitor')),
+      appBar: AppBar(title: const Text('Battery Level Monitor')),
       body: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Text('Battery Level: $_batteryLevel%', style: TextStyle(fontSize: 24)),
-            Text('Device :  123', style: TextStyle(fontSize: 24)),
-            SizedBox(height: 20),
-            Text('Status: $_statusMessage', style: TextStyle(fontSize: 16, color: Colors.green)),
-            SizedBox(height: 20),
+            Text('Battery Level: $_batteryLevel%', style: const TextStyle(fontSize: 24)),
+            Text('Device ID: $_deviceId', style: const TextStyle(fontSize: 18)),
+            Text('Device Model: $_deviceModel', style: const TextStyle(fontSize: 18)),
+            const SizedBox(height: 20),
+            Text('Status: $_statusMessage', style: const TextStyle(fontSize: 16, color: Colors.green)),
+            const SizedBox(height: 20),
             ElevatedButton(
-              onPressed: _updateBatteryLevel,
-              child: Text("Update Battery Level"),
+              onPressed: () {
+                FlutterBackgroundService().invoke("stopService");
+                setState(() {
+                  _statusMessage = "Background service stopped";
+                });
+              },
+              child: const Text("Stop Background Service"),
             ),
           ],
         ),
